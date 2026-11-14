@@ -1,0 +1,6 @@
+{
+  "name": "Jio Panal",
+  "description": "15% commission partner panel with Google Sign-In, OTP verification, biometric lock, ₹5000 UPI activation with QR code, live transaction ledger, referrals, multi-language support, 24/7 support chat, Telegram support, and secure admin control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

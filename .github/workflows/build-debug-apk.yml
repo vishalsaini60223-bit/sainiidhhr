@@ -1,0 +1,142 @@
+name: Build & Publish Debug APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-debug-apk:
+    name: Build Debug APK & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare Debug Keystore
+        run: |
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Build Debug APK
+        run: |
+          if [ -x ./gradlew ]; then
+            ./gradlew :app:assembleDebug --no-daemon
+          else
+            gradle :app:assembleDebug --no-daemon
+          fi
+
+      - name: Verify Built APK
+        id: verify_apk
+        run: |
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "Error: Built APK not found at $APK_PATH" >&2
+            exit 1
+          fi
+          if [ ! -s "$APK_PATH" ]; then
+            echo "Error: Built APK at $APK_PATH is empty" >&2
+            exit 1
+          fi
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Actions APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: ${{ steps.verify_apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Prepare GitHub Release Asset
+        id: prepare_release_asset
+        run: |
+          ORIGINAL_APK="${{ steps.verify_apk.outputs.apk_path }}"
+          STAGE_DIR="${{ runner.temp }}/release-assets"
+          PREPARED_APK="${STAGE_DIR}/app-debug.apk"
+
+          mkdir -p "$STAGE_DIR"
+          cp -p "$ORIGINAL_APK" "$PREPARED_APK"
+
+          if [ ! -f "$PREPARED_APK" ] || [ ! -s "$PREPARED_APK" ]; then
+            echo "Error: Prepared release asset is missing or empty" >&2
+            exit 1
+          fi
+
+          echo "release_asset_path=$PREPARED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Publish APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARED_APK: ${{ steps.prepare_release_asset.outputs.release_asset_path }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "Error: GitHub CLI (gh) is not available" >&2
+            exit 1
+          fi
+
+          gh --version
+
+          if [ -z "${PREPARED_APK:-}" ] || [ ! -f "$PREPARED_APK" ]; then
+            echo "Error: Prepared APK does not exist at '$PREPARED_APK'" >&2
+            exit 1
+          fi
+
+          if [ ! -s "$PREPARED_APK" ]; then
+            echo "Error: Prepared APK is empty" >&2
+            exit 1
+          fi
+
+          case "$PREPARED_APK" in
+            *.apk) ;;
+            *)
+              echo "Error: Prepared release asset does not end in .apk: $PREPARED_APK" >&2
+              exit 1
+              ;;
+          esac
+
+          ASSET_FILENAME="$(basename "$PREPARED_APK")"
+          if [ "$ASSET_FILENAME" != "app-debug.apk" ]; then
+            echo "Error: Release asset filename must be exactly app-debug.apk, got: $ASSET_FILENAME" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+
+          gh release create "$RELEASE_TAG" "$PREPARED_APK" \
+            --repo "${{ github.repository }}" \
+            --title "Debug APK Build (${RELEASE_TAG})" \
+            --notes "Automated debug APK build for run ${GITHUB_RUN_NUMBER}, attempt ${GITHUB_RUN_ATTEMPT} (${GITHUB_SHA})."
